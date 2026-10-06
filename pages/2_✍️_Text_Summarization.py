@@ -1,3 +1,4 @@
+import random
 import streamlit as st
 from utils import (
     load_model_and_tokenizer,
@@ -43,7 +44,7 @@ min_len = st.sidebar.slider("Min Summary Length:", min_value=10, max_value=100, 
 tab1, tab2 = st.tabs(["📝 Input Custom News Article", "📰 Try Sample Articles from Dataset"])
 
 # =========================================================
-# TAB 1: CUSTOM TEXT SUMMARIZATION
+# TAB 1: CUSTOM TEXT SUMMARIZATION (UNCHANGED)
 # =========================================================
 with tab1:
     st.subheader("Paste your News Article")
@@ -110,41 +111,113 @@ with tab1:
             m_col4.metric("Length Reduction", f"{metrics['reduction_percentage']}%")
 
 # =========================================================
-# TAB 2: SAMPLE ARTICLE MODE
+# TAB 2: SAMPLE ARTICLE MODE (ENHANCED ACCESS)
 # =========================================================
 with tab2:
     st.subheader("Compare Reference vs. Model Summary")
-    st.markdown("Select a real article from the cleaned **CNN/DailyMail** test dataset to evaluate generated quality.")
+    st.markdown("Explore articles from the cleaned **CNN/DailyMail** dataset (7,957 articles) using 3 interactive selection methods.")
     
     df_clean = load_cleaned_data("cleaned_data.csv")
     
     if df_clean.empty:
         st.error("Dataset 'cleaned_data.csv' unavailable for sample selection.")
     else:
-        # Pick 10 sample indices
-        sample_indices = list(range(min(10, len(df_clean))))
-        sample_labels = [f"Sample #{i+1} ({df_clean.iloc[i]['article_length']} words)" for i in sample_indices]
-        
-        selected_sample_idx = st.selectbox(
-            "Choose a sample article:",
-            options=sample_indices,
-            format_func=lambda i: sample_labels[i]
+        # Initialize active sample index in session state if needed
+        if "sample_index" not in st.session_state or st.session_state["sample_index"] >= len(df_clean):
+            st.session_state["sample_index"] = 0
+
+        # Mode Selection Controls
+        selection_method = st.radio(
+            "Choose Selection Method:",
+            options=["🎲 Random Sample", "🔢 Select by Index", "🔍 Search by Keyword"],
+            horizontal=True
         )
-        
-        sample_row = df_clean.iloc[selected_sample_idx]
+
+        # -----------------------------------------------------
+        # 1. Random Sample Selection
+        # -----------------------------------------------------
+        if selection_method == "🎲 Random Sample":
+            st.markdown("Pick a completely random news article from the cleaned dataset.")
+            col_rand1, col_rand2 = st.columns([1, 3])
+            with col_rand1:
+                if st.button("🎲 Pick Random Article", type="secondary"):
+                    st.session_state["sample_index"] = random.randint(0, len(df_clean) - 1)
+            with col_rand2:
+                st.info(f"Currently Selected Dataset Index: **#{st.session_state['sample_index']}** (Total articles: {len(df_clean):,})")
+
+        # -----------------------------------------------------
+        # 2. Select by Index
+        # -----------------------------------------------------
+        elif selection_method == "🔢 Select by Index":
+            st.markdown(f"Enter any exact row index between **0** and **{len(df_clean) - 1}**.")
+            chosen_index = st.number_input(
+                "Enter article index:",
+                min_value=0,
+                max_value=len(df_clean) - 1,
+                value=int(st.session_state["sample_index"]),
+                step=1
+            )
+            st.session_state["sample_index"] = int(chosen_index)
+
+        # -----------------------------------------------------
+        # 3. Search by Keyword
+        # -----------------------------------------------------
+        elif selection_method == "🔍 Search by Keyword":
+            search_query = st.text_input(
+                "Search articles by keyword:",
+                placeholder="e.g., President, London, Flight, Police..."
+            )
+            
+            if search_query.strip():
+                # Case-insensitive keyword search
+                matches = df_clean[df_clean["article"].str.contains(search_query.strip(), case=False, na=False)]
+                
+                if matches.empty:
+                    st.warning(f"⚠️ No articles found matching keyword: **'{search_query.strip()}'**. Try a different search term.")
+                else:
+                    # Show up to 20 matching results
+                    matches_limited = matches.head(20)
+                    st.success(f"Found **{len(matches):,}** total matching articles. Showing top {len(matches_limited)} results:")
+                    
+                    match_indices = matches_limited.index.tolist()
+                    
+                    def format_match(idx):
+                        art_text = df_clean.iloc[idx]["article"].replace("\n", " ")
+                        snippet = art_text[:60] + "..." if len(art_text) > 60 else art_text
+                        words = df_clean.iloc[idx]["article_length"]
+                        return f"Index #{idx} | {words} words | {snippet}"
+
+                    # Default to current session index if present in matches, else first match
+                    default_sel_idx = match_indices.index(st.session_state["sample_index"]) if st.session_state["sample_index"] in match_indices else 0
+                    
+                    selected_match = st.selectbox(
+                        "Select matching article:",
+                        options=match_indices,
+                        index=default_sel_idx,
+                        format_func=format_match
+                    )
+                    st.session_state["sample_index"] = selected_match
+            else:
+                st.info("💡 Enter a keyword above to search through the dataset articles.")
+
+        # -----------------------------------------------------
+        # Selected Article Display & Summary Generation
+        # -----------------------------------------------------
+        selected_idx = st.session_state["sample_index"]
+        sample_row = df_clean.iloc[selected_idx]
         sample_article = sample_row["article"]
         reference_summary = sample_row["highlights"]
         
         st.divider()
         
-        # Display Original Article
-        st.markdown(f"### 📰 Original Article (Sample #{selected_sample_idx+1})")
-        st.caption(f"Length: {sample_row['article_length']} words")
+        # Display Original Article Details
+        st.markdown(f"### 📰 Original Article (Dataset Index #{selected_idx})")
+        st.caption(f"Article Length: **{sample_row['article_length']} words** | Reference Summary Length: **{sample_row['highlights_length']} words**")
         st.text_area("Full Article Text:", value=sample_article, height=180, disabled=True)
         
-        btn_sample_gen = st.button("✨ Generate Summary for Selected Sample", type="primary", key="btn_sample")
+        btn_sample_gen = st.button("✨ Generate Model Summary for Selected Sample", type="primary", key="btn_sample")
         
-        if btn_sample_gen or f"generated_sample_{selected_sample_idx}" in st.session_state:
+        if btn_sample_gen or f"generated_sample_{selected_idx}" in st.session_state:
             if btn_sample_gen:
                 with st.spinner("Generating summary for sample article..."):
                     gen_summary = generate_summary(
@@ -156,9 +229,9 @@ with tab2:
                         min_length=min_len,
                         num_beams=num_beams
                     )
-                    st.session_state[f"generated_sample_{selected_sample_idx}"] = gen_summary
+                    st.session_state[f"generated_sample_{selected_idx}"] = gen_summary
             else:
-                gen_summary = st.session_state[f"generated_sample_{selected_sample_idx}"]
+                gen_summary = st.session_state[f"generated_sample_{selected_idx}"]
                 
             st.divider()
             st.markdown("### 🔍 Summary Comparison")
